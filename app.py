@@ -116,8 +116,8 @@ with st.sidebar:
         st.query_params["thread_id"] = str(uuid.uuid4())[:8]
         st.rerun()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        st.warning("Set ANTHROPIC_API_KEY to enable the agents.", icon="⚠️")
+    if not os.environ.get("GEMINI_API_KEY"):
+        st.warning("Set GEMINI_API_KEY to enable the agents.", icon="⚠️")
 
 # --------------------------------------------------------------------------
 # Graph (cached across reruns, keyed by thread persistence db)
@@ -155,8 +155,8 @@ if user_input:
 
     with st.chat_message("assistant", avatar="🗓️"):
         with st.spinner("Routing to the right agent…"):
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                st.error("No ANTHROPIC_API_KEY set in the environment.")
+            if not os.environ.get("GEMINI_API_KEY"):
+                st.error("No GEMINI_API_KEY set in the environment.")
             else:
                 try:
                     result = app.invoke(

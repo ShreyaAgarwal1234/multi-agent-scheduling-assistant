@@ -17,21 +17,20 @@ thread's history survives page refreshes.
 
 from __future__ import annotations
 
-import json
 import os
+import sqlite3
 from datetime import datetime
 from typing import Annotated, Literal, TypedDict
 
-import sqlite3
-
-import anthropic
+from google import genai
+from google.genai import types
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
+from tools import TOOL_FUNCTIONS
 
-MODEL_NAME = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 CHECKPOINT_DB = os.path.join(os.path.dirname(__file__), "checkpoints.sqlite")
 
 # Holds open sqlite3 connections so they are never garbage-collected while
@@ -44,16 +43,16 @@ class AgentState(TypedDict):
     route: str  # "general" | "booking"
 
 
-def _client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+def _client() -> genai.Client:
+    return genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 
-def _to_anthropic_messages(messages: list) -> list[dict]:
-    """Convert LangGraph message objects into plain Anthropic API dicts."""
+def _to_gemini_contents(messages: list) -> list[dict]:
+    """Convert LangGraph message objects into Gemini 'contents' dicts."""
     out = []
     for m in messages:
-        role = "user" if m.type in ("human",) else "assistant"
-        out.append({"role": role, "content": m.content})
+        role = "user" if m.type in ("human",) else "model"
+        out.append({"role": role, "parts": [{"text": m.content}]})
     return out
 
 
@@ -69,30 +68,34 @@ No punctuation, no explanation."""
 
 def triage_node(state: AgentState) -> dict:
     client = _client()
-    history = _to_anthropic_messages(state["messages"])
+    contents = _to_gemini_contents(state["messages"])
 
-    resp = client.messages.create(
+    resp = client.models.generate_content(
         model=MODEL_NAME,
-        max_tokens=10,
-        system=TRIAGE_SYSTEM,
-        messages=history,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=TRIAGE_SYSTEM,
+            max_output_tokens=10,
+        ),
     )
-    decision = resp.content[0].text.strip().lower()
+    decision = (resp.text or "").strip().lower()
     route = "booking" if "booking" in decision else "general"
 
     if route == "general":
         # Answer directly for general queries.
-        reply = client.messages.create(
+        reply = client.models.generate_content(
             model=MODEL_NAME,
-            max_tokens=400,
-            system=(
-                "You are a friendly scheduling assistant's front desk. Answer "
-                "general questions helpfully and briefly. If relevant, mention "
-                "that you can also help book, check, or reschedule appointments."
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "You are a friendly scheduling assistant's front desk. Answer "
+                    "general questions helpfully and briefly. If relevant, mention "
+                    "that you can also help book, check, or reschedule appointments."
+                ),
+                max_output_tokens=400,
             ),
-            messages=history,
         )
-        text = "".join(b.text for b in reply.content if b.type == "text")
+        text = reply.text or ""
         return {"messages": [{"role": "assistant", "content": text}], "route": "general"}
 
     return {"route": "booking"}
@@ -127,49 +130,24 @@ Rules:
 
 def booking_node(state: AgentState) -> dict:
     client = _client()
-    history = _to_anthropic_messages(state["messages"])
+    contents = _to_gemini_contents(state["messages"])
     system = _booking_system_prompt()
 
-    new_messages = []
-    # Agentic tool-use loop (capped to avoid runaway loops).
-    for _ in range(6):
-        resp = client.messages.create(
-            model=MODEL_NAME,
-            max_tokens=800,
-            system=system,
-            tools=TOOL_SCHEMAS,
-            messages=history + new_messages,
-        )
+    # Gemini's automatic function calling: pass the plain Python functions
+    # directly as tools. The SDK reads each function's type hints and
+    # docstring to build the schema, calls whichever tools the model
+    # decides it needs (in a loop internally), and returns the final
+    # text response once the model is done calling tools.
+    resp = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            tools=list(TOOL_FUNCTIONS.values()),
+        ),
+    )
 
-        assistant_content = resp.content
-        new_messages.append({"role": "assistant", "content": assistant_content})
-
-        if resp.stop_reason != "tool_use":
-            break
-
-        tool_results = []
-        for block in assistant_content:
-            if block.type != "tool_use":
-                continue
-            fn = TOOL_FUNCTIONS.get(block.name)
-            result = fn(**block.input) if fn else {"error": f"Unknown tool {block.name}"}
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result),
-                }
-            )
-        new_messages.append({"role": "user", "content": tool_results})
-
-    final_text = ""
-    if new_messages and isinstance(new_messages[-1]["content"], list):
-        for block in new_messages[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                final_text += block.text
-    if not final_text:
-        final_text = "Let me know a date, time, and email and I'll get that booked."
-
+    final_text = resp.text or "Let me know a date, time, and email and I'll get that booked."
     return {"messages": [{"role": "assistant", "content": final_text}], "route": "booking"}
 
 
