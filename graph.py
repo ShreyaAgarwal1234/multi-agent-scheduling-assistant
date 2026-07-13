@@ -75,7 +75,8 @@ def triage_node(state: AgentState) -> dict:
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=TRIAGE_SYSTEM,
-            max_output_tokens=10,
+            max_output_tokens=40,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     decision = (resp.text or "").strip().lower()
@@ -93,6 +94,7 @@ def triage_node(state: AgentState) -> dict:
                     "that you can also help book, check, or reschedule appointments."
                 ),
                 max_output_tokens=400,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         text = reply.text or ""
