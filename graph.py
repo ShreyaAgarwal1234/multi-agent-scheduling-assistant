@@ -22,6 +22,8 @@ import os
 from datetime import datetime
 from typing import Annotated, Literal, TypedDict
 
+import sqlite3
+
 import anthropic
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
@@ -31,6 +33,10 @@ from tools import TOOL_FUNCTIONS, TOOL_SCHEMAS
 
 MODEL_NAME = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 CHECKPOINT_DB = os.path.join(os.path.dirname(__file__), "checkpoints.sqlite")
+
+# Holds open sqlite3 connections so they are never garbage-collected while
+# the app is running (see build_graph() below).
+_OPEN_CONNECTIONS: list = []
 
 
 class AgentState(TypedDict):
@@ -182,6 +188,15 @@ def build_graph():
     })
     graph.add_edge("booking_specialist", END)
 
-    conn_ctx = SqliteSaver.from_conn_string(CHECKPOINT_DB)
-    checkpointer = conn_ctx.__enter__()  # keep the sqlite connection open for app lifetime
+    # Open the sqlite connection directly (instead of via the
+    # SqliteSaver.from_conn_string(...) context manager) and keep a
+    # reference to it in a module-level list. The context-manager form
+    # can get garbage-collected once this function returns, which closes
+    # the underlying connection out from under the checkpointer and
+    # causes "Cannot operate on a closed database" errors. check_same_thread=False
+    # is needed because Streamlit may call into the graph from a
+    # different thread than the one that opened the connection.
+    conn = sqlite3.connect(CHECKPOINT_DB, check_same_thread=False)
+    _OPEN_CONNECTIONS.append(conn)  # prevent garbage collection
+    checkpointer = SqliteSaver(conn)
     return graph.compile(checkpointer=checkpointer)
