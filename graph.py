@@ -30,7 +30,7 @@ from langgraph.graph.message import add_messages
 
 from tools import TOOL_FUNCTIONS
 
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 CHECKPOINT_DB = os.path.join(os.path.dirname(__file__), "checkpoints.sqlite")
 
 # Holds open sqlite3 connections so they are never garbage-collected while
